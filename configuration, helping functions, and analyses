@@ -1,0 +1,167 @@
+# =============================================================================
+# Multi-Participant Eye-Tracking Analysis for VR Eye Anatomy App
+# Features:
+# - AOI Entropy over Time (sliding window)
+# - Fixation Clustering (DBSCAN on gaze positions)
+# - Gaze Replay / Sequence Maps (scanpath plots)
+# =============================================================================
+
+julia
+using CSV
+using DataFrames
+using Plots
+using StatsBase
+using Statistics
+using Clustering  # for fixation clustering
+
+# -----------------------------------------------------------------------------
+# STEP 1: Configuration
+# -----------------------------------------------------------------------------
+
+data_folder = "./data"  # Folder of per-participant CSVs
+output_folder = "./output"
+participant_files = filter(f -> endswith(f, ".csv"), readdir(data_folder))
+interactive_aois = ["Button#1", "Button#2", "etc", "etc"]
+sample_rate = 60  # Hz
+
+# Learning gain data (optional)
+learning_gains_path = "./learning_gains.csv"
+has_learning_data = isfile(learning_gains_path)
+if has_learning_data
+    learning_df = CSV.read(learning_gains_path, DataFrame)
+    learning_df[:, :gain] = learning_df.post_score .- learning_df.pre_score
+end
+
+# -----------------------------------------------------------------------------
+# STEP 2: Helper Functions
+# -----------------------------------------------------------------------------
+
+"Compute AOI entropy for a string vector"
+function compute_entropy(aoi_sequence)
+    counts = countmap(aoi_sequence)
+    probs = [v / sum(values(counts)) for v in values(counts)]
+    return -sum(p * log2(p) for p in probs if p > 0)
+end
+
+"Build gaze transition matrix from AOI sequence"
+function transition_matrix(aoi_sequence)
+    unique_aois = unique(skipmissing(aoi_sequence))
+    aoi_idx = Dict(aoi => i for (i, aoi) in enumerate(unique_aois))
+    mat = zeros(Int, length(unique_aois), length(unique_aois))
+    for i in 1:length(aoi_sequence)-1
+        from = aoi_sequence[i]
+        to = aoi_sequence[i+1]
+        if !ismissing(from) && !ismissing(to)
+            mat[aoi_idx[from], aoi_idx[to]] += 1
+        end
+    end
+    return mat, unique_aois
+end
+
+"Sliding window entropy for AOI sequence"
+function entropy_over_time(aoi_sequence, window_size::Int)
+    entropies = []
+    idxs = []
+    for i in 1:window_size:length(aoi_sequence)-window_size
+        w = aoi_sequence[i:i+window_size-1]
+        push!(entropies, compute_entropy(w))
+        push!(idxs, i)
+    end
+    return idxs, entropies
+end
+
+# -----------------------------------------------------------------------------
+# STEP 3: Process Each Participant
+# -----------------------------------------------------------------------------
+
+all_stats = DataFrame(participant=String[], entropy=Float64[], dwell_time=Float64[], transition_sum=Int[])
+
+for file in participant_files
+    println("\\nProcessing: ", file)
+    df = CSV.read(joinpath(data_folder, file), DataFrame)
+    participant_id = splitext(basename(file))[1]
+
+    # --- 1. AOI Fixation duration/stats
+    group_stats = combine(groupby(df, :gazePointAOI_target_name),
+        nrow => :FixationCount,
+        :eyeDataTimestamp => minimum => :StartTime,
+        :eyeDataTimestamp => maximum => :EndTime)
+    group_stats.Duration = group_stats.EndTime .- group_stats.StartTime
+    CSV.write("$(output_folder)/$(participant_id)_aoi_stats.csv", group_stats)
+
+    # --- 2. Gaze transition matrix (AOI→AOI)
+    aoi_seq = df.gazePointAOI_target_name
+    mat, aois = transition_matrix(aoi_seq)
+    CSV.write("$(output_folder)/$(participant_id)_transition_matrix.csv", DataFrame(mat, :auto))
+
+    # --- 3. AOI entropy (overall)
+    entropy_val = compute_entropy(aoi_seq)
+
+    # --- 4. Dwell time on interactive AOIs
+    dwell_rows = filter(:gazePointAOI_target_name => a -> a in interactive_aois, df)
+    dwell_time = nrow(dwell_rows) * (1 / sample_rate)
+
+    # --- 5. Total transitions (for summary)
+    transition_total = sum(mat)
+
+    # Store participant summary
+    push!(all_stats, (participant_id, entropy_val, dwell_time, transition_total))
+
+    # =========================================================================
+    # ADVANCED: AOI Entropy Over Time (Sliding Window)
+    # =========================================================================
+    window_size = sample_rate * 5  # 5 seconds, adjust as needed
+    idxs, entropies = entropy_over_time(aoi_seq, window_size)
+    plot(idxs, entropies, xlabel="Sample Index", ylabel="Entropy",
+        title="AOI Entropy Over Time (sliding window)", label="Entropy")
+    savefig("$(output_folder)/$(participant_id)_entropy_time.png")
+
+    # =========================================================================
+    # ADVANCED: Fixation Clustering (using DBSCAN)
+    # =========================================================================
+    # Only use gaze points with real (finite) x/y
+    x = collect(skipmissing(df.gazeOrigin_x))
+    y = collect(skipmissing(df.gazeOrigin_y))
+    gaze_points = hcat(x, y)
+    # Use DBSCAN for spatial clustering (eps=0.01 and minpts=10 are example params)
+    labels = dbscan(gaze_points, 0.01, 10).assignments
+    scatter(x, y, group=labels, legend=false,
+        title="Fixation Clusters", xlabel="Gaze X", ylabel="Gaze Y")
+    savefig("$(output_folder)/$(participant_id)_fixation_clusters.png")
+
+    # =========================================================================
+    # ADVANCED: Gaze Sequence Map / Replay (Scanpath Plot)
+    # =========================================================================
+    # Plot gaze as a path through space
+    plot(x, y, seriestype=:path, marker=:circle, markersize=2,
+        xlabel="Gaze X", ylabel="Gaze Y", legend=false,
+        title="Gaze Sequence (Scanpath)")
+    scatter!(x, y, color=:red, ms=2)
+    savefig("$(output_folder)/$(participant_id)_scanpath.png")
+end
+
+CSV.write("$(output_folder)/summary_metrics.csv", all_stats)
+
+# -----------------------------------------------------------------------------
+# STEP 4: Correlation with Learning Gain (optional)
+# -----------------------------------------------------------------------------
+
+if has_learning_data
+    merged = innerjoin(all_stats, learning_df, on=:participant)
+
+    println("\\n--- Correlation Analysis ---")
+    println("Correlation (AOI entropy vs learning gain): ", cor(merged.entropy, merged.gain))
+    println("Correlation (dwell time vs learning gain): ", cor(merged.dwell_time, merged.gain))
+
+    scatter(merged.entropy, merged.gain,
+        title="Entropy vs Learning Gain",
+        xlabel="AOI Entropy",
+        ylabel="Gain")
+    savefig("$(output_folder)/cor_entropy_gain.png")
+
+    scatter(merged.dwell_time, merged.gain,
+        title="Dwell Time vs Learning Gain",
+        xlabel="Dwell Time (s)",
+        ylabel="Gain")
+    savefig("$(output_folder)/cor_dwell_gain.png")
+end
