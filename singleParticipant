@@ -1,0 +1,114 @@
+using CSV
+using DataFrames
+using Plots
+using Clustering
+
+# Path to your CSV file - UPDATE THIS PATH TO YOUR ACTUAL FILE
+data_path = "AAATMN03EYE.csv"  # Make sure this file exists in your working directory!
+output_folder = "./output"
+
+# Check if file exists
+if !isfile(data_path)
+    println("ERROR: File '$data_path' not found!")
+    println("Please check the file path and make sure the file exists.")
+    exit()
+end
+
+# Create output directory
+mkpath(output_folder)
+
+# ---- LOAD DATA ----
+println("Loading data from $data_path...")
+df = CSV.read(data_path, DataFrame)
+println("Data loaded successfully. Shape: $(size(df))")
+
+# Display column names to help debug
+println("Column names: $(names(df))")
+
+# ---- FILTER FOR VALID GAZE POINTS ----
+# Check if the required columns exist
+required_columns = ["gazeOrigin_x", "gazeOrigin_y"]
+missing_columns = [col for col in required_columns if !(col in names(df))]
+
+if !isempty(missing_columns)
+    println("ERROR: Missing required columns: $missing_columns")
+    println("Available columns: $(names(df))")
+    exit()
+end
+
+# Filter for valid gaze points
+println("Filtering for valid gaze points...")
+good_rows = [row for row in eachrow(df) if isfinite(row.gazeOrigin_x) && isfinite(row.gazeOrigin_y)]
+
+if length(good_rows) == 0
+    println("No valid gaze data found!")
+    println("Total rows in dataset: $(nrow(df))")
+    println("Rows with finite gazeOrigin_x: $(sum(isfinite.(df.gazeOrigin_x)))")
+    println("Rows with finite gazeOrigin_y: $(sum(isfinite.(df.gazeOrigin_y)))")
+else
+    println("Found $(length(good_rows)) valid gaze points out of $(nrow(df)) total rows")
+    
+    # Extract coordinates
+    x = [row.gazeOrigin_x for row in good_rows]
+    y = [row.gazeOrigin_y for row in good_rows]
+    gaze_points = hcat(x, y)
+    
+    println("Gaze point range - X: $(minimum(x)) to $(maximum(x)), Y: $(minimum(y)) to $(maximum(y))")
+    
+    # ---- STEP 3: Fixation Clustering (DBSCAN) ----
+    println("Performing DBSCAN clustering...")
+    
+    # Transpose the data for DBSCAN (it expects features × samples)
+    gaze_points_t = transpose(gaze_points)
+    
+    # Perform DBSCAN clustering
+    # You may need to adjust eps (0.01) and min_pts (10) based on your data
+    clustering_result = dbscan(gaze_points_t, 0.01, 10)
+    labels = clustering_result.assignments
+    
+    println("Found $(maximum(labels)) clusters")
+    
+    # Create fixation clusters plot
+    scatter(
+        x, y,
+        group=labels,
+        legend=false,
+        xlabel="Gaze X",
+        ylabel="Gaze Y",
+        title="Fixation Clusters",
+        markersize=3
+    )
+    savefig("$(output_folder)/fixation_clusters.png")
+    println("Fixation clusters plot saved")
+    
+    # ---- STEP 4: Gaze Sequence Map (Scanpath) ----
+    println("Creating scanpath visualization...")
+    
+    plot(
+        x, y,
+        seriestype=:path,
+        marker=:circle,
+        markersize=2,
+        xlabel="Gaze X",
+        ylabel="Gaze Y",
+        legend=false,
+        title="Gaze Sequence (Scanpath)",
+        linewidth=1,
+        alpha=0.7
+    )
+    scatter!(x, y, color=:red, ms=2, alpha=0.8)
+    savefig("$(output_folder)/scanpath.png")
+    println("Scanpath plot saved")
+    
+    println("Plots saved in the 'output' folder.")
+    
+    # ---- OPTIONAL: Display some statistics ----
+    println("\n--- SUMMARY STATISTICS ---")
+    println("Total valid gaze points: $(length(good_rows))")
+    println("Number of clusters found: $(maximum(labels))")
+    println("Noise points (cluster -1): $(sum(labels .== 0))")
+    println("Gaze range X: $(round(minimum(x), digits=3)) to $(round(maximum(x), digits=3))")
+    println("Gaze range Y: $(round(minimum(y), digits=3)) to $(round(maximum(y), digits=3))")
+end
+
+println("\n--- SCRIPT COMPLETED ---")
