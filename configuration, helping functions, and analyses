@@ -117,7 +117,7 @@ for file in participant_files
     savefig("$(output_folder)/$(participant_id)_entropy_time.png")
 
     # =========================================================================
-    # ADVANCED: Fixation Clustering (using DBSCAN)
+    # Fixation Clustering (using DBSCAN)
     # =========================================================================
     # Only use gaze points with real (finite) x/y
     x = collect(skipmissing(df.gazeOrigin_x))
@@ -130,7 +130,7 @@ for file in participant_files
     savefig("$(output_folder)/$(participant_id)_fixation_clusters.png")
 
     # =========================================================================
-    # ADVANCED: Gaze Sequence Map / Replay (Scanpath Plot)
+    # Gaze Sequence Map / Replay (Scanpath Plot)
     # =========================================================================
     # Plot gaze as a path through space
     plot(x, y, seriestype=:path, marker=:circle, markersize=2,
@@ -143,7 +143,7 @@ end
 CSV.write("$(output_folder)/summary_metrics.csv", all_stats)
 
 # -----------------------------------------------------------------------------
-# STEP 4: Correlation with Learning Gain (optional)
+# Correlation with Learning Gain (optional)
 # -----------------------------------------------------------------------------
 
 if has_learning_data
