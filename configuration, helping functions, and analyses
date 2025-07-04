@@ -28,7 +28,7 @@ sample_rate = 60  # Hz
 learning_gains_path = "./learning_gains.csv"
 has_learning_data = isfile(learning_gains_path)
 if has_learning_data
-    learning_df = CSV.read(learning_gains_path, DataFrame)
+    learning_df = CSV.read(AAATMN03EYE.csv, DataFrame)
     learning_df[:, :gain] = learning_df.post_score .- learning_df.pre_score
 end
 
